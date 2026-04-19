@@ -1,0 +1,92 @@
+upstream app_backend {
+    server 127.0.0.1:{{ app_port }};
+}
+
+{% if nginx_ssl_enabled %}
+# Redirect HTTP → HTTPS
+server {
+    listen 80;
+    server_name {{ nginx_server_name }};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name {{ nginx_server_name }};
+
+{% if nginx_ssl_mode == "selfsigned" %}
+    ssl_certificate     /etc/nginx/ssl/{{ app_name }}.crt;
+    ssl_certificate_key /etc/nginx/ssl/{{ app_name }}.key;
+{% else %}
+    ssl_certificate     {{ nginx_ssl_cert }};
+    ssl_certificate_key {{ nginx_ssl_key }};
+{% endif %}
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+
+{% else %}
+server {
+    listen 80;
+    server_name {{ nginx_server_name }};
+{% endif %}
+
+    # Security headers
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+
+    # Gzip compression
+    gzip on;
+    gzip_types application/json text/css application/javascript text/xml text/plain;
+    gzip_min_length 1000;
+    gzip_comp_level 6;
+
+    # ── Static assets (Vite build — hashed filenames, cache forever) ──
+    location /assets/ {
+        alias {{ app_base_dir }}/backend/static/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # ── API requests → Gunicorn ───────────────────────────────────────
+    location /api/ {
+        proxy_pass http://app_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 10s;
+    }
+
+    # ── Swagger / Redoc docs ─────────────────────────────────────────
+    location /docs {
+        proxy_pass http://app_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /redoc {
+        proxy_pass http://app_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /openapi.json {
+        proxy_pass http://app_backend;
+    }
+
+    # ── SPA catch-all → index.html ───────────────────────────────────
+    location / {
+        root {{ app_base_dir }}/backend/static;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Logging
+    access_log /var/log/nginx/{{ app_name }}.access.log;
+    error_log  /var/log/nginx/{{ app_name }}.error.log;
+}

@@ -1,0 +1,49 @@
+---
+# ── Install Nginx ────────────────────────────────────────────────────
+- name: Install Nginx
+  ansible.builtin.package:
+    name: nginx
+    state: present
+
+# ── Generate self-signed TLS cert (if configured) ────────────────────
+- name: Create TLS directory
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    mode: "0700"
+  when: nginx_ssl_enabled and nginx_ssl_mode == "selfsigned"
+
+- name: Generate self-signed certificate
+  ansible.builtin.command:
+    cmd: >
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048
+      -keyout /etc/nginx/ssl/{{ app_name }}.key
+      -out /etc/nginx/ssl/{{ app_name }}.crt
+      -subj "/CN={{ nginx_server_name }}/O=DB Infra OPS/C=US"
+    creates: /etc/nginx/ssl/{{ app_name }}.crt
+  when: nginx_ssl_enabled and nginx_ssl_mode == "selfsigned"
+  notify: restart nginx
+
+# ── Nginx config ─────────────────────────────────────────────────────
+- name: Remove default Nginx site (Debian)
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  when: ansible_os_family == "Debian"
+  notify: restart nginx
+
+- name: Deploy Nginx config
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/conf.d/{{ app_name }}.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart nginx
+
+# ── Start and enable Nginx ───────────────────────────────────────────
+- name: Start and enable Nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true

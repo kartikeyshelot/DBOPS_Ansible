@@ -1,0 +1,98 @@
+---
+# ── Detect OS family ──────────────────────────────────────────────────
+- name: Gather OS facts
+  ansible.builtin.setup:
+    filter: ansible_os_family
+
+# ── Install system packages (RHEL/CentOS) ────────────────────────────
+- name: Install system packages (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - python3.12
+      - python3.12-pip
+      - python3.12-devel
+      - gcc
+      - libpq-devel
+      - curl
+      - unzip
+      - git
+    state: present
+  when: ansible_os_family == "RedHat"
+
+# ── Install system packages (Ubuntu/Debian) ──────────────────────────
+- name: Install system packages (Debian)
+  ansible.builtin.apt:
+    name:
+      - python3
+      - python3-pip
+      - python3-venv
+      - python3-dev
+      - gcc
+      - libpq-dev
+      - curl
+      - unzip
+      - git
+    state: present
+    update_cache: true
+  when: ansible_os_family == "Debian"
+
+# ── Create application user ──────────────────────────────────────────
+- name: Create app group
+  ansible.builtin.group:
+    name: "{{ app_group }}"
+    state: present
+
+- name: Create app user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    home: "{{ app_base_dir }}"
+    shell: /sbin/nologin
+    system: true
+    create_home: true
+    state: present
+
+# ── Create directory structure ────────────────────────────────────────
+- name: Create application directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0755"
+  loop:
+    - "{{ app_base_dir }}"
+    - "{{ app_base_dir }}/backend"
+    - "{{ app_base_dir }}/frontend"
+    - "{{ app_base_dir }}/logs"
+    - "{{ app_base_dir }}/venv"
+
+# ── Firewall (firewalld — RHEL/CentOS) ───────────────────────────────
+- name: Configure firewalld (RedHat)
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_allowed_ports }}"
+  when: ansible_os_family == "RedHat"
+  ignore_errors: true
+
+# ── Firewall (ufw — Ubuntu/Debian) ───────────────────────────────────
+- name: Configure ufw (Debian)
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.split('/')[0] }}"
+    proto: "{{ item.split('/')[1] }}"
+  loop: "{{ firewall_allowed_ports }}"
+  when: ansible_os_family == "Debian"
+  ignore_errors: true
+
+# ── SELinux — allow Nginx to connect to upstream (RHEL) ──────────────
+- name: Allow Nginx to connect to app (SELinux)
+  ansible.posix.seboolean:
+    name: httpd_can_network_connect
+    state: true
+    persistent: true
+  when: ansible_os_family == "RedHat"
+  ignore_errors: true

@@ -1,0 +1,37 @@
+[Unit]
+Description=DB Infrastructure OPS — FastAPI Application
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=exec
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_base_dir }}/backend
+EnvironmentFile={{ app_base_dir }}/backend/.env
+
+ExecStart={{ app_base_dir }}/venv/bin/gunicorn main:app \
+    -k uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:{{ app_port }} \
+    --workers {{ gunicorn_workers }} \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile {{ app_base_dir }}/logs/access.log \
+    --error-logfile {{ app_base_dir }}/logs/error.log
+
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier={{ app_name }}
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{ app_base_dir }}/logs
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

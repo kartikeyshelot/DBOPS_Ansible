@@ -1,0 +1,85 @@
+---
+# ══════════════════════════════════════════════════════════════════════
+# Quick update — push new code without re-running full setup
+# ══════════════════════════════════════════════════════════════════════
+#
+# Use this after you change backend or frontend code.
+# Skips PostgreSQL, Nginx, and OS setup — just deploys the app.
+#
+# Usage:
+#   cd ansible
+#   ansible-playbook -i inventory/hosts.yml update.yml
+# ══════════════════════════════════════════════════════════════════════
+
+- name: Quick update — redeploy app code
+  hosts: app_servers
+  become: true
+
+  tasks:
+    - name: Copy backend code
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../backend/"
+        dest: "{{ app_base_dir }}/backend/"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Copy frontend code
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../frontend/"
+        dest: "{{ app_base_dir }}/frontend/"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Install frontend dependencies (if changed)
+      ansible.builtin.command:
+        cmd: npm ci --no-audit --no-fund
+        chdir: "{{ app_base_dir }}/frontend"
+      become: true
+      become_user: "{{ app_user }}"
+      register: npm_install
+      changed_when: "'added' in npm_install.stdout"
+
+    - name: Rebuild frontend
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ app_base_dir }}/frontend"
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Copy built frontend to backend/static
+      ansible.builtin.copy:
+        src: "{{ app_base_dir }}/frontend/dist/"
+        dest: "{{ app_base_dir }}/backend/static/"
+        remote_src: true
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+
+    - name: Update Python dependencies
+      ansible.builtin.pip:
+        requirements: "{{ app_base_dir }}/backend/requirements.txt"
+        virtualenv: "{{ app_base_dir }}/venv"
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Restart app
+      ansible.builtin.systemd:
+        name: "{{ app_name }}"
+        state: restarted
+
+    - name: Wait for app to be ready
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ app_port }}/api/ping"
+        method: GET
+        status_code: 200
+      register: health_check
+      retries: 15
+      delay: 2
+      until: health_check.status == 200
+
+    - name: Update complete
+      ansible.builtin.debug:
+        msg: "App updated and healthy at {{ 'https' if nginx_ssl_enabled else 'http' }}://{{ nginx_server_name }}"

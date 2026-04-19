@@ -1,0 +1,44 @@
+# ══════════════════════════════════════════════════════════════════════
+# All configurable variables — edit these before running the playbook
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Application ───────────────────────────────────────────────────────
+app_name: db-infra-ops
+app_user: dbinfraops
+app_group: dbinfraops
+app_base_dir: /opt/db-infra-ops
+app_port: 8090
+gunicorn_workers: 2
+
+# ── PostgreSQL ────────────────────────────────────────────────────────
+pg_version: "15"
+pg_db_name: db_infra_ops
+pg_db_user: dbinfra
+pg_db_password: "ChangeMe_Str0ng!2024"       # ← CHANGE THIS
+pg_listen_address: "127.0.0.1"                # localhost only (same VM)
+pg_port: 5432
+
+# ── Nginx ─────────────────────────────────────────────────────────────
+nginx_server_name: db-infra-ops.example.com   # ← Change to your hostname or IP
+nginx_ssl_enabled: true
+# Set to "selfsigned" for auto-generated certs, or "custom" to bring your own
+nginx_ssl_mode: selfsigned
+# If nginx_ssl_mode is "custom", put your cert/key files here:
+# nginx_ssl_cert: /etc/pki/tls/certs/your-cert.pem
+# nginx_ssl_key: /etc/pki/tls/private/your-key.pem
+
+# ── Node.js (for building the frontend) ──────────────────────────────
+nodejs_version: "20"
+
+# ── Firewall ──────────────────────────────────────────────────────────
+firewall_allowed_ports:
+  - "80/tcp"
+  - "443/tcp"
+  - "22/tcp"
+
+# ── CORS ──────────────────────────────────────────────────────────────
+# This is auto-computed from nginx_server_name — no manual edit needed
+cors_origins: "https://{{ nginx_server_name }},http://{{ nginx_server_name }}"
+
+# ── Zabbix defaults (optional — users enter these in the UI) ─────────
+zabbix_verify_tls: "false"

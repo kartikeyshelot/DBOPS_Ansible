@@ -1,0 +1,180 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# DB Infrastructure OPS — OpenShift Application Deployment
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Usage:
+#   oc apply -f k8s/postgres.yaml    # deploy PostgreSQL first
+#   oc apply -f k8s/deployment.yaml  # then the application
+#
+# Environment variables injected from Secret "db-infra-ops-db-credentials"
+# created by postgres.yaml. Override CORS_ORIGINS for your route hostname.
+# ══════════════════════════════════════════════════════════════════════════════
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-infra-ops-app-config
+  labels:
+    app: db-infra-ops
+type: Opaque
+stringData:
+  # Override with your actual route hostname
+  CORS_ORIGINS: "https://db-infra-ops.apps.your-cluster.example.com"
+  # Set to "true" if your Zabbix has a valid TLS cert
+  ZABBIX_VERIFY_TLS: "false"
+
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-infra-ops
+  labels:
+    app: db-infra-ops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-infra-ops
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: db-infra-ops
+    spec:
+      # ── Security context — OpenShift restricted SCC compatible ──────────
+      securityContext:
+        # OpenShift assigns the UID from the namespace range; do not set runAsUser
+        runAsNonRoot: true
+        fsGroup: 0
+      terminationGracePeriodSeconds: 45
+
+      containers:
+        - name: app
+          # Replace with your actual image registry path
+          image: image-registry.openshift-image-registry.svc:5000/YOUR_NAMESPACE/db-infra-ops:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8090
+              protocol: TCP
+              name: http
+
+          # ── Environment ─────────────────────────────────────────────────
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-db-credentials
+                  key: database-url
+            - name: CORS_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-app-config
+                  key: CORS_ORIGINS
+            - name: ZABBIX_VERIFY_TLS
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-app-config
+                  key: ZABBIX_VERIFY_TLS
+            # Python optimizations for containers
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+
+          # ── Resource limits ─────────────────────────────────────────────
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+
+          # ── Health probes ───────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /api/ping
+              port: 8090
+            failureThreshold: 30
+            periodSeconds: 2
+
+          readinessProbe:
+            httpGet:
+              path: /api/ping
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/ping
+              port: 8090
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # ── Security context (container-level) ──────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          # ── Volume mounts ───────────────────────────────────────────────
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-infra-ops
+  labels:
+    app: db-infra-ops
+spec:
+  selector:
+    app: db-infra-ops
+  ports:
+    - port: 8090
+      targetPort: 8090
+      protocol: TCP
+      name: http
+  type: ClusterIP
+
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: db-infra-ops
+  labels:
+    app: db-infra-ops
+spec:
+  # OpenShift auto-assigns: db-infra-ops-<namespace>.apps.<cluster>
+  to:
+    kind: Service
+    name: db-infra-ops
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

@@ -1,0 +1,104 @@
+---
+# ── Install PostgreSQL (RHEL/CentOS) ─────────────────────────────────
+- name: Install PostgreSQL repo (RedHat)
+  ansible.builtin.dnf:
+    name: "https://download.postgresql.org/pub/repos/yum/reporpms/EL-{{ ansible_distribution_major_version }}-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+    state: present
+    disable_gpg_check: true
+  when: ansible_os_family == "RedHat"
+
+- name: Install PostgreSQL (RedHat)
+  ansible.builtin.dnf:
+    name:
+      - "postgresql{{ pg_version }}-server"
+      - "postgresql{{ pg_version }}"
+      - python3-psycopg2
+    state: present
+  when: ansible_os_family == "RedHat"
+
+# ── Install PostgreSQL (Ubuntu/Debian) ────────────────────────────────
+- name: Install PostgreSQL (Debian)
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ pg_version }}"
+      - "postgresql-client-{{ pg_version }}"
+      - python3-psycopg2
+    state: present
+  when: ansible_os_family == "Debian"
+
+# ── Initialize database cluster (RHEL only — Debian auto-initializes) ─
+- name: Check if PostgreSQL is initialized (RedHat)
+  ansible.builtin.stat:
+    path: "/var/lib/pgsql/{{ pg_version }}/data/pg_hba.conf"
+  register: pg_data
+  when: ansible_os_family == "RedHat"
+
+- name: Initialize PostgreSQL (RedHat)
+  ansible.builtin.command:
+    cmd: "/usr/pgsql-{{ pg_version }}/bin/postgresql-{{ pg_version }}-setup initdb"
+  when: ansible_os_family == "RedHat" and not pg_data.stat.exists
+
+# ── Configure pg_hba.conf for password auth ──────────────────────────
+- name: Find pg_hba.conf location
+  ansible.builtin.shell: |
+    find /etc/postgresql /var/lib/pgsql -name pg_hba.conf 2>/dev/null | head -1
+  register: pg_hba_path
+  changed_when: false
+
+- name: Allow password authentication for app user
+  ansible.builtin.lineinfile:
+    path: "{{ pg_hba_path.stdout }}"
+    insertbefore: "^local\\s+all\\s+all"
+    line: "local   {{ pg_db_name }}   {{ pg_db_user }}                          md5"
+    state: present
+  notify: restart postgresql
+
+- name: Allow password authentication over TCP
+  ansible.builtin.lineinfile:
+    path: "{{ pg_hba_path.stdout }}"
+    insertbefore: "^host\\s+all\\s+all"
+    line: "host    {{ pg_db_name }}   {{ pg_db_user }}   127.0.0.1/32           md5"
+    state: present
+  notify: restart postgresql
+
+# ── Start and enable PostgreSQL ──────────────────────────────────────
+- name: Determine PostgreSQL service name
+  ansible.builtin.set_fact:
+    pg_service: "{{ 'postgresql-' + pg_version if ansible_os_family == 'RedHat' else 'postgresql' }}"
+
+- name: Start and enable PostgreSQL
+  ansible.builtin.systemd:
+    name: "{{ pg_service }}"
+    state: started
+    enabled: true
+
+# ── Force restart to pick up pg_hba changes ──────────────────────────
+- name: Flush handlers (restart PG if config changed)
+  ansible.builtin.meta: flush_handlers
+
+# ── Create database user and database ────────────────────────────────
+- name: Create database user
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    name: "{{ pg_db_user }}"
+    password: "{{ pg_db_password }}"
+    state: present
+
+- name: Create database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_db:
+    name: "{{ pg_db_name }}"
+    owner: "{{ pg_db_user }}"
+    encoding: UTF-8
+    state: present
+
+- name: Grant all privileges on database
+  become: true
+  become_user: postgres
+  community.postgresql.postgresql_privs:
+    database: "{{ pg_db_name }}"
+    privs: ALL
+    type: database
+    role: "{{ pg_db_user }}"

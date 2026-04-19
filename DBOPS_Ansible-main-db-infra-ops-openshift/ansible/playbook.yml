@@ -1,0 +1,69 @@
+---
+# ══════════════════════════════════════════════════════════════════════
+# DB Infrastructure OPS — On-Premise VM Deployment
+# ══════════════════════════════════════════════════════════════════════
+#
+# Deploys the full stack on a single VM:
+#   PostgreSQL → Python backend (Gunicorn) → React frontend → Nginx
+#
+# Usage:
+#   1. Edit ansible/inventory/hosts.yml   (your VM IP + SSH user)
+#   2. Edit ansible/group_vars/all.yml    (passwords, hostname)
+#   3. Run:
+#        cd ansible
+#        ansible-playbook -i inventory/hosts.yml playbook.yml
+#
+# Supports: RHEL 8/9, CentOS Stream 8/9, Ubuntu 22.04/24.04
+# ══════════════════════════════════════════════════════════════════════
+
+- name: Deploy DB Infrastructure OPS
+  hosts: app_servers
+  become: true
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - pg_db_password != "ChangeMe_Str0ng!2024"
+        fail_msg: |
+          ╔════════════════════════════════════════════════════════════╗
+          ║  STOP: You must change pg_db_password in                  ║
+          ║  ansible/group_vars/all.yml before deploying!             ║
+          ╚════════════════════════════════════════════════════════════╝
+
+    - name: Show deployment summary
+      ansible.builtin.debug:
+        msg: |
+          Deploying {{ app_name }} to {{ ansible_host }}
+            PostgreSQL: {{ pg_db_name }} on port {{ pg_port }}
+            Backend:    Gunicorn on 127.0.0.1:{{ app_port }}
+            Frontend:   Nginx on {{ nginx_server_name }}
+            SSL:        {{ 'enabled (' + nginx_ssl_mode + ')' if nginx_ssl_enabled else 'disabled' }}
+
+  roles:
+    - role: common
+      tags: [common, setup]
+
+    - role: postgresql
+      tags: [postgresql, database]
+
+    - role: app
+      tags: [app, deploy]
+
+    - role: nginx
+      tags: [nginx, proxy]
+
+  post_tasks:
+    - name: Deployment complete
+      ansible.builtin.debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════╗
+          ║  Deployment complete!                                      ║
+          ║                                                            ║
+          ║  URL:  {{ 'https' if nginx_ssl_enabled else 'http' }}://{{ nginx_server_name }}                  ║
+          ║  API:  {{ 'https' if nginx_ssl_enabled else 'http' }}://{{ nginx_server_name }}/api/ping        ║
+          ║  Docs: {{ 'https' if nginx_ssl_enabled else 'http' }}://{{ nginx_server_name }}/docs            ║
+          ║                                                            ║
+          ║  Logs: {{ app_base_dir }}/logs/              ║
+          ║  Service: systemctl status {{ app_name }}                  ║
+          ╚════════════════════════════════════════════════════════════╝

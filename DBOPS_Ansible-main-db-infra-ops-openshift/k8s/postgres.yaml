@@ -1,0 +1,167 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# DB Infrastructure OPS — PostgreSQL Database
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Lightweight PostgreSQL sized for this workload:
+#   - Small dataset (hundreds of servers, not millions of rows)
+#   - Infrequent writes (one bulk insert per fetch cycle, every ~24h)
+#   - Read-heavy dashboard queries
+#
+# For production: consider a PostgreSQL Operator (CrunchyData PGO or Zalando)
+# or a managed PostgreSQL service for automatic backups and HA.
+#
+# Usage:
+#   oc apply -f k8s/postgres.yaml
+#   oc apply -f k8s/deployment.yaml
+# ══════════════════════════════════════════════════════════════════════════════
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-infra-ops-db-credentials
+  labels:
+    app: db-infra-ops
+    component: database
+type: Opaque
+stringData:
+  # ── Change these values before deploying ────────────────────────────────
+  database-name: "db_infra_ops"
+  database-user: "dbinfra"
+  database-password: "CHANGE_ME_BEFORE_DEPLOY"
+  # This is the connection string the app pod uses (references the service name)
+  database-url: "postgresql://dbinfra:CHANGE_ME_BEFORE_DEPLOY@db-infra-ops-db:5432/db_infra_ops"
+
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-infra-ops-db-data
+  labels:
+    app: db-infra-ops
+    component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # 1Gi is generous for this workload — fetch data for hundreds of servers
+      # with 3 retained runs uses ~50-200MB typically
+      storage: 1Gi
+
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-infra-ops-db
+  labels:
+    app: db-infra-ops
+    component: database
+spec:
+  replicas: 1
+  # Database pods should not do rolling updates — recreate to avoid dual-write
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db-infra-ops
+      component: database
+  template:
+    metadata:
+      labels:
+        app: db-infra-ops
+        component: database
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 0
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: postgresql
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+
+          env:
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-db-credentials
+                  key: database-name
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-db-credentials
+                  key: database-user
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-infra-ops-db-credentials
+                  key: database-password
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRESQL_USER -d $POSTGRESQL_DATABASE -h 127.0.0.1
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U $POSTGRESQL_USER -d $POSTGRESQL_DATABASE -h 127.0.0.1
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: db-infra-ops-db-data
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db-infra-ops-db
+  labels:
+    app: db-infra-ops
+    component: database
+spec:
+  selector:
+    app: db-infra-ops
+    component: database
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgresql
+  type: ClusterIP
